@@ -14,6 +14,7 @@ Chapter 1 hub prototype for the new Starmon Quest game. The supplied game mechan
 - Trainer roster names, named thug/challenger rounds, and Day / Night / Rain / INSCENTED encounter lists.
 - Guest story position in local storage; authenticated story position and account profile through Supabase.
 - Core calculations from the document in `src/game/mechanics.ts`: damage, tie-breaking, EXP, level-up stat points, Mcap caps, and two-stage encounter selection.
+- Male/female protagonist selection and trainer class portraits in `public/assets/characters`.
 - Supabase migration for player persistence is in `supabase/migrations`.
 
 The mechanics file does not define per-round trainer teams, starter selection, item identities, or battle setup values. Those portions are intentionally left unimplemented pending source data; this prototype does not generate battles or alter the supplied encounter odds.

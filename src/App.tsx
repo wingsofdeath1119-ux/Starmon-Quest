@@ -5,7 +5,11 @@ import { Bell, BookOpen, Box, ChevronDown, CircleHelp, Clock3, CloudRain, Compas
 import type { Session } from '@supabase/supabase-js';
 
 type StoryProgress = { chapter: number; quest_id: string; round_number: number };
+type ProtagonistGender = 'male' | 'female';
 const START: StoryProgress = { chapter: 1, quest_id: 'q1_starville', round_number: 1 };
+
+function validGender(value: unknown): value is ProtagonistGender { return value === 'male' || value === 'female'; }
+function protagonistImage(gender: ProtagonistGender) { return `/assets/characters/protagonist-${gender}.webp`; }
 
 export default function App() {
   const [questId, setQuestId] = useState(START.quest_id);
@@ -13,6 +17,12 @@ export default function App() {
   const [time, setTime] = useState<'DAY' | 'NIGHT'>('DAY');
   const [weather, setWeather] = useState<Weather>('NONE');
   const [session, setSession] = useState<Session | null>(null);
+  const [gender, setGender] = useState<ProtagonistGender | null>(() => {
+    const stored = localStorage.getItem('sq_protagonist_gender');
+    return validGender(stored) ? stored : null;
+  });
+  const [characterReady, setCharacterReady] = useState(false);
+  const [characterOpen, setCharacterOpen] = useState(false);
   const [wallet, setWallet] = useState<{ gold: number; gems: number; reset_tokens: number } | null>(null);
   const [view, setView] = useState('Progress');
   const [authOpen, setAuthOpen] = useState(false);
@@ -29,11 +39,23 @@ export default function App() {
     if (local) {
       try { const p = JSON.parse(local) as StoryProgress; if (p.chapter === 1 && chapter1Quests.some((q) => q.id === p.quest_id)) { setQuestId(p.quest_id); setRound(p.round_number); } } catch { localStorage.removeItem('sq_guest_progress'); }
     }
-    if (!supabase) return;
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    if (!supabase) { setCharacterReady(true); return; }
+    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setCharacterReady(true); });
     const { data } = supabase.auth.onAuthStateChange((_event, next) => setSession(next));
     return () => data.subscription.unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!session || !supabase) return;
+    const cloudGender = session.user.user_metadata?.protagonist_gender;
+    if (validGender(cloudGender)) {
+      setGender(cloudGender);
+      localStorage.setItem('sq_protagonist_gender', cloudGender);
+      return;
+    }
+    const localGender = localStorage.getItem('sq_protagonist_gender');
+    if (validGender(localGender)) void supabase.auth.updateUser({ data: { protagonist_gender: localGender } });
+  }, [session]);
 
   useEffect(() => {
     if (!session || !supabase) { setWallet(null); return; }
@@ -91,6 +113,16 @@ export default function App() {
   function selectQuest(next: Quest) { setQuestId(next.id); setRound(next.rounds[0]); void saveProgress(next, next.rounds[0]); }
   function selectRound(next: number) { setRound(next); void saveProgress(quest, next); }
 
+  async function chooseProtagonist(next: ProtagonistGender) {
+    setGender(next);
+    localStorage.setItem('sq_protagonist_gender', next);
+    setCharacterOpen(false);
+    if (session && supabase) {
+      const { error } = await supabase.auth.updateUser({ data: { protagonist_gender: next } });
+      if (error) setMessage(error.message);
+    }
+  }
+
   async function submitAuth(event: React.FormEvent) {
     event.preventDefault(); if (!supabase) { setMessage('Supabase is not configured.'); return; }
     setMessage('');
@@ -117,7 +149,7 @@ export default function App() {
     <header className="topbar">
       <div className="brand"><span className="brand-mark"><Sparkles size={19} /></span><span>STARMON <b>QUEST</b></span><i>CHAPTER 1</i></div>
       <div className="account-strip">
-        <div className="trainer-avatar"><UserRound size={18} /></div>
+        <div className="trainer-avatar">{gender ? <img src={protagonistImage(gender)} alt={`${gender} protagonist`} /> : <UserRound size={18} />}</div>
         <div className="trainer-name"><strong>{session?.user.email?.split('@')[0] ?? 'Guest Trainer'}</strong><small>{session ? 'Cloud save' : 'Local save'}</small></div>
         <div className="currency"><span className="coin gold">G</span><b>{wallet ? wallet.gold.toLocaleString() : '—'}</b></div>
         <div className="currency"><Gem size={16} className="gem" /><b>{wallet ? wallet.gems.toLocaleString() : '—'}</b></div>
@@ -161,7 +193,7 @@ export default function App() {
         <div className="below-stage">
           <section className="quest-select card-panel"><div className="panel-head"><div><span className="eyebrow">CHAPTER ROUTE</span><h2>Quest map</h2></div><span className="count-badge">5 QUESTS</span></div>
             <div className="quest-list">{chapter1Quests.map((q, i) => <button key={q.id} className={`quest-row ${q.id === quest.id ? 'selected' : ''}`} onClick={() => selectQuest(q)}><span className="quest-index">Q{i + 1}</span><span className="quest-name">{q.title}<small>{q.locations[0]} → {q.locations[1]}</small></span><span className="quest-rounds">R{q.rounds[0]}–{q.rounds[1]}</span></button>)}</div>
-            <div className="trainer-roster"><span className="eyebrow">TRAINERS LISTED IN QUEST</span>{quest.trainers.map((trainer) => <p key={trainer.job}><b>{trainer.job}</b><span>{trainer.names.join(' · ')}</span></p>)}</div>
+            <TrainerRoster quest={quest} />
           </section>
           <section className="round-select card-panel"><div className="panel-head"><div><span className="eyebrow">CURRENT QUEST</span><h2>Rounds</h2></div><span className="count-badge">{quest.locations.join(' · ')}</span></div><div className="round-grid">{roundRange.map((n) => <button key={n} className={n === round ? 'active' : ''} onClick={() => selectRound(n)}>R{n}<small>{getRoundLocation(quest, n)}</small></button>)}</div>
           </section>
@@ -175,12 +207,13 @@ export default function App() {
           {!encounters.length ? <div className="empty-encounters"><CloudRain size={18}/><span>No encounter table is specified for this weather at this Quest.</span></div> : <EncounterTable groups={encounters} locked={isSpecial} special={isSpecial} />}
           <div className="legendary-note"><span className="legendary-star">✦</span><span>Legendary and event encounters require a rarity item.</span></div>
         </section>
-        <section className="trainer-card"><div className="trainer-card-icon"><UserRound size={18}/></div><div><span className="eyebrow">TRAINER</span><b>{session?.user.email?.split('@')[0] ?? 'Guest Trainer'}</b><small>Chapter 1 · {quest.title}</small></div><Bell size={17} className="trainer-bell" /></section>
+        <section className="trainer-card"><div className="trainer-card-icon">{gender ? <img src={protagonistImage(gender)} alt="" /> : <UserRound size={18}/>}</div><div><span className="eyebrow">TRAINER</span><b>{session?.user.email?.split('@')[0] ?? 'Guest Trainer'}</b><small>{gender ? `${gender === 'male' ? 'Male' : 'Female'} protagonist · ` : ''}Chapter 1 · {quest.title}</small></div><button className="change-avatar" onClick={() => setCharacterOpen(true)}>CHANGE</button></section>
         <div className="sync-line"><span className={saved ? 'sync-dot' : 'sync-dot syncing'} />{saved ? (session ? 'Cloud progress saved' : 'Guest progress saved on this device') : 'Saving progress…'}</div>
       </aside>
     </div>
 
     {message && <div className="toast" role="status"><span>{message}</span><button onClick={() => setMessage('')}><X size={16}/></button></div>}
+    {characterReady && (characterOpen || !gender) && <div className="modal-backdrop character-backdrop"><section className="character-modal"><span className="eyebrow">STARMON QUEST · TRAINER PROFILE</span><h2>Choose your protagonist</h2><p>Your choice is saved for this Guest profile and synced to Supabase when signed in.</p><div className="character-choices"><button className={`character-choice ${gender === 'male' ? 'chosen' : ''}`} onClick={() => void chooseProtagonist('male')}><img src={protagonistImage('male')} alt="Male protagonist"/><span>Male protagonist</span></button><button className={`character-choice ${gender === 'female' ? 'chosen' : ''}`} onClick={() => void chooseProtagonist('female')}><img src={protagonistImage('female')} alt="Female protagonist"/><span>Female protagonist</span></button></div></section></div>}
     {authOpen && <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) setAuthOpen(false); }}><section className="auth-modal"><button className="modal-close" onClick={() => setAuthOpen(false)}><X size={18}/></button><span className="eyebrow">STARMON QUEST ACCOUNT</span><h2>{authMode === 'signin' ? 'Welcome back, Trainer' : 'Create your account'}</h2><p>Cloud saves are linked to your Supabase account. Guest progress stays on this device.</p><form onSubmit={(e) => void submitAuth(e)}><label>Email<input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></label><label>Password<input type="password" autoComplete={authMode === 'signin' ? 'current-password' : 'new-password'} minLength={6} required value={password} onChange={(e) => setPassword(e.target.value)} /></label><button className="primary-action" type="submit">{authMode === 'signin' ? 'Sign in' : 'Create account'}</button></form><div className="auth-divider"><span>OR</span></div><button className="google-button" onClick={() => void googleLogin()}>Continue with Google</button><button className="text-button mode-switch" onClick={() => setAuthMode(authMode === 'signin' ? 'signup' : 'signin')}>{authMode === 'signin' ? 'Create a new account' : 'I already have an account'}</button></section></div>}
   </div>;
 }
@@ -193,6 +226,21 @@ function EncounterTable({ groups, locked, special }: { groups: EncounterGroup[];
   const colors: Record<string, string> = { Common: 'rarity-common', Uncommon: 'rarity-uncommon', Rare: 'rarity-rare', 'Ultra Rare': 'rarity-ultra', Legendary: 'rarity-legendary' };
   const rates: Record<string, number> = special ? { Common: 45, Uncommon: 27, Rare: 18, 'Ultra Rare': 7, Legendary: 3 } : { Common: 60, Uncommon: 25, Rare: 12, 'Ultra Rare': 3 };
   return <div className="encounter-list">{groups.map((group) => <div className="rarity-group" key={group.rarity}><div className={`rarity-heading ${colors[group.rarity]}`}><span>{group.rarity}</span><i>{rates[group.rarity] !== undefined ? `${rates[group.rarity]}%` : ''}</i></div><div className="species-grid">{group.entries.map((entry) => <div className={`species-entry ${entry.name === 'Cervalor' ? 'legendary-entry' : ''}`} key={entry.name}><span className="species-icon">{entry.name === 'Cervalor' ? '✦' : <Sparkles size={13}/>}</span><span className="species-name">{entry.name}</span>{entry.chance !== undefined && <b>{entry.chance}%</b>}{entry.name === 'Cervalor' && <small>{locked ? 'LOCKED' : 'RARITY ITEM'}</small>}</div>)}</div></div>)}</div>;
+}
+
+function TrainerRoster({ quest }: { quest: Quest }) {
+  const portraits: Record<string, { src: string; label: string }[]> = {
+    Schoolkid: [
+      { src: '/assets/characters/schoolkid-male.png', label: 'Male schoolkid' },
+      { src: '/assets/characters/schoolkid-female.png', label: 'Female schoolkid' },
+    ],
+    Highschooler: [
+      { src: '/assets/characters/highschooler-male.png', label: 'Male highschooler' },
+      { src: '/assets/characters/highschooler-female.png', label: 'Female highschooler' },
+    ],
+    'Bug Collector': [{ src: '/assets/characters/bug-collector-male.png', label: 'Male bug collector' }],
+  };
+  return <div className="trainer-roster"><span className="eyebrow">TRAINERS LISTED IN QUEST</span>{quest.trainers.map((trainer) => <div className="trainer-type" key={trainer.job}><div className="trainer-type-heading"><b>{trainer.job}</b><span>{trainer.names.join(' · ')}</span></div>{portraits[trainer.job] && <div className="trainer-portraits">{portraits[trainer.job].map((portrait) => <div className="trainer-portrait" key={portrait.src}><img src={portrait.src} alt={portrait.label} /><span>{portrait.label}</span></div>)}</div>}</div>)}</div>;
 }
 
 function roundKind(quest: Quest, round: number) {
